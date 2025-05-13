@@ -30,8 +30,14 @@ i18n
     },
     detection: {
       order: ['localStorage', 'navigator'],
-      caches: ['localStorage']
+      caches: ['localStorage'],
+      lookupLocalStorage: 'i18nextLng'
     }
   });
+
+// Save language changes to localStorage for persistence
+i18n.on('languageChanged', (lng) => {
+  localStorage.setItem('i18nextLng', lng);
+});
 
 export default i18n;
