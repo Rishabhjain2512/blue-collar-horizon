@@ -2,58 +2,13 @@
 import { createContext, useState, useContext, ReactNode, useEffect } from "react";
 import { User, AuthContextType } from "@/types";
 import { useToast } from "@/components/ui/use-toast";
+import { createClient } from "@supabase/supabase-js";
 
-// Mock functions for authentication - to be replaced with real API calls
-const mockLogin = async (email: string, password: string): Promise<User> => {
-  // Simulate API call
-  return new Promise((resolve, reject) => {
-    setTimeout(() => {
-      if (email === "worker@example.com" && password === "password") {
-        resolve({
-          id: "1",
-          name: "Ravi Kumar",
-          email: "worker@example.com",
-          role: "worker",
-          phone: "+91 9876543210",
-        });
-      } else if (email === "employer@example.com" && password === "password") {
-        resolve({
-          id: "2",
-          name: "Anita Sharma",
-          email: "employer@example.com",
-          role: "employer",
-          phone: "+91 9876543211",
-        });
-      } else {
-        reject(new Error("Invalid email or password"));
-      }
-    }, 1000);
-  });
-};
+// Initialize Supabase client
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
+const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
 
-const mockRegister = async (userData: Partial<User>, password: string): Promise<User> => {
-  // Simulate API call
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      const newUser = {
-        id: Math.random().toString(36).substr(2, 9),
-        ...userData,
-      } as User;
-      resolve(newUser);
-    }, 1000);
-  });
-};
-
-const mockUpdateUser = async (userData: Partial<User>): Promise<User> => {
-  // Simulate API call
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve({
-        ...(userData as User),
-      });
-    }, 1000);
-  });
-};
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Create context
 const AuthContext = createContext<AuthContextType>({
@@ -71,28 +26,103 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const { toast } = useToast();
 
   useEffect(() => {
-    // Check if user is logged in from localStorage
-    const storedUser = localStorage.getItem("user");
-    if (storedUser) {
+    // Check if the user is already authenticated with Supabase
+    const checkSession = async () => {
       try {
-        setUser(JSON.parse(storedUser));
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        if (session) {
+          // Get user profile from Supabase
+          const { data: profile, error } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', session.user.id)
+            .single();
+          
+          if (profile) {
+            const userData: User = {
+              id: session.user.id,
+              email: session.user.email || '',
+              name: profile.name || '',
+              role: profile.role || 'worker',
+              phone: profile.phone || '',
+            };
+            setUser(userData);
+          }
+        }
       } catch (error) {
-        console.error("Error parsing user from localStorage:", error);
+        console.error("Error checking session:", error);
+      } finally {
+        setLoading(false);
       }
-    }
-    setLoading(false);
+    };
+
+    checkSession();
+
+    // Set up auth state change listener
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' && session) {
+        // Get user profile data
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', session.user.id)
+          .single();
+
+        if (profile) {
+          const userData: User = {
+            id: session.user.id,
+            email: session.user.email || '',
+            name: profile.name || '',
+            role: profile.role || 'worker',
+            phone: profile.phone || '',
+          };
+          setUser(userData);
+        }
+      } else if (event === 'SIGNED_OUT') {
+        setUser(null);
+      }
+    });
+
+    return () => {
+      subscription?.unsubscribe();
+    };
   }, []);
 
   const login = async (email: string, password: string) => {
     try {
       setLoading(true);
-      const user = await mockLogin(email, password);
-      setUser(user);
-      localStorage.setItem("user", JSON.stringify(user));
-      toast({
-        title: "Login successful",
-        description: `Welcome back, ${user.name}!`,
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
       });
+
+      if (error) throw new Error(error.message);
+
+      if (data.user) {
+        // Get user profile data from profiles table
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', data.user.id)
+          .single();
+
+        if (profileError) throw new Error(profileError.message);
+
+        const userData: User = {
+          id: data.user.id,
+          email: data.user.email || '',
+          name: profile.name || '',
+          role: profile.role || 'worker',
+          phone: profile.phone || '',
+        };
+        setUser(userData);
+
+        toast({
+          title: "Login successful",
+          description: `Welcome back, ${profile.name}!`,
+        });
+      }
     } catch (error) {
       toast({
         title: "Login failed",
@@ -108,13 +138,47 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const register = async (userData: Partial<User>, password: string) => {
     try {
       setLoading(true);
-      const user = await mockRegister(userData, password);
-      setUser(user);
-      localStorage.setItem("user", JSON.stringify(user));
-      toast({
-        title: "Registration successful",
-        description: `Welcome, ${user.name}!`,
+
+      // Register the user with Supabase Auth
+      const { data, error } = await supabase.auth.signUp({
+        email: userData.email || '',
+        password: password,
       });
+
+      if (error) throw new Error(error.message);
+
+      if (data.user) {
+        // Create a profile in the profiles table
+        const { error: profileError } = await supabase
+          .from('profiles')
+          .insert([
+            {
+              id: data.user.id,
+              email: userData.email,
+              name: userData.name,
+              role: userData.role,
+              phone: userData.phone || '',
+              created_at: new Date(),
+            },
+          ]);
+
+        if (profileError) throw new Error(profileError.message);
+
+        const newUser: User = {
+          id: data.user.id,
+          email: userData.email || '',
+          name: userData.name || '',
+          role: userData.role || 'worker',
+          phone: userData.phone || '',
+        };
+
+        setUser(newUser);
+
+        toast({
+          title: "Registration successful",
+          description: `Welcome, ${userData.name}!`,
+        });
+      }
     } catch (error) {
       toast({
         title: "Registration failed",
@@ -127,24 +191,62 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const logout = () => {
-    setUser(null);
-    localStorage.removeItem("user");
-    toast({
-      title: "Logged out",
-      description: "You have been logged out successfully.",
-    });
+  const logout = async () => {
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+      
+      setUser(null);
+      
+      toast({
+        title: "Logged out",
+        description: "You have been logged out successfully.",
+      });
+    } catch (error) {
+      toast({
+        title: "Logout failed",
+        description: (error as Error).message,
+        variant: "destructive",
+      });
+    }
   };
 
   const updateUser = async (userData: Partial<User>) => {
     try {
       setLoading(true);
-      const updatedUser = await mockUpdateUser({
+      
+      if (!user) throw new Error("No user is logged in");
+      
+      // Update the user profile in Supabase
+      const { error } = await supabase
+        .from('profiles')
+        .update({
+          name: userData.name,
+          phone: userData.phone,
+          role: userData.role,
+          // Add other fields as needed
+        })
+        .eq('id', user.id);
+
+      if (error) throw new Error(error.message);
+
+      // Update email if it's being changed
+      if (userData.email && userData.email !== user.email) {
+        const { error: updateEmailError } = await supabase.auth.updateUser({
+          email: userData.email
+        });
+        
+        if (updateEmailError) throw new Error(updateEmailError.message);
+      }
+
+      // Update local state
+      const updatedUser = {
         ...user,
         ...userData,
-      });
+      };
+      
       setUser(updatedUser);
-      localStorage.setItem("user", JSON.stringify(updatedUser));
+      
       toast({
         title: "Profile updated",
         description: "Your profile has been updated successfully.",

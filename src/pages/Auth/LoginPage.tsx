@@ -12,6 +12,9 @@ const LoginPage = () => {
         <p className="text-gray-600 mt-2">
           {t("auth.login_prompt")}
         </p>
+        <p className="text-sm text-gray-500 mt-4">
+          Now using Supabase for secure authentication
+        </p>
       </div>
 
       <LoginForm />
